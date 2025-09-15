@@ -52,7 +52,7 @@
       padding:2rem;
     }
     button,
-    input,  /* Changed to catch all inputs including Prolific ID field */
+    input,
     select {
       font-size:1.1rem; /* Increased from 1rem */
       padding:.5rem 1rem;
@@ -135,12 +135,6 @@ const CONFIG = {
   csvFile                : 'statements_master.csv',
   dataPipeID             : 'qWHxwr6D720q',
   prolificCompletionURL  : 'https://app.prolific.com/submissions/complete?cc=C6W6295Z',
-  // NEW: screen-out completion code and ineligible CSV
-  prolificScreenoutURL   : 'https://app.prolific.com/submissions/complete?cc=COSVL3Y3',
-  ineligibleCSV          : 'prior_participants.csv',
-  // Optional: the name Prolific uses for the PID query param (Prolific standard)
-  prolificPIDParam       : 'PROLIFIC_PID',
-
   fallbackDownload       : true,
   fixationCrossDuration  : 500,
   statementTimeoutDuration: 15000,
@@ -148,18 +142,16 @@ const CONFIG = {
   timeoutFeedbackDuration: 2000,
   isiDuration            : 500,
   groups                 : ['High', 'Medium', 'Low', 'Control'],
-
-  // p_c (Affirm if correct) for symmetric non-veridical schedule during induction.
-  // Misinfo (counterfactual) dose = 1 - p_c  -> High: ~8/40, Med: ~20/40, Low: ~32/40.
+  // p_c: Affirm if correct. Misinfo dose = 1 - p_c (symmetric non-veridical schedule).
   feedbackManipulationPercentages: {
-    High   : 0.80,
-    Medium : 0.50,
-    Low    : 0.20,
-    Control: null   // Control = veridical baseline
+    High   : 0.80, // -> ~8/40 counterfactual
+    Medium : 0.50, // -> ~20/40 counterfactual
+    Low    : 0.20, // -> ~32/40 counterfactual
+    Control: null  // veridical baseline
   },
-
-  epsilonIncorrectAffirm : 0.05, // retained but unused by the symmetric schedule
-  numInductionTrials: 40,
+  // retained but unused in the symmetric schedule (set by design)
+  epsilonIncorrectAffirm : 0.05,
+  numInductionTrials: 40, // as requested
   numTestTrials: 20,
   masterHeader : [
     'pid', 'session_key', 'group', 'block_type', 'trial_number_in_block', 'trial_number_overall',
@@ -173,23 +165,39 @@ const CONFIG = {
   ]
 };
 
-// Practice questions (unchanged)
+// Practice questions to add before the main experiment blocks
 const practiceStatements = [
-  { id:'practice_1', text:'The Sun revolves around the Earth each day.', is_true:false,
-    fact_check_true:'Actually, the Earth orbits the Sun; the Sun does not revolve around the Earth.',
-    fact_check_false:'Correct! The Earth orbits the Sun; the Sun does not revolve around the Earth.' },
-  { id:'practice_2', text:'Humans need oxygen to survive.', is_true:true,
-    fact_check_true:'Correct! Humans must breathe oxygen to stay alive.',
-    fact_check_false:'Not quite. Humans do need oxygen to survive.' },
-  { id:'practice_3', text:'The American flag has 50 stars, one for each U.S. state.', is_true:true,
-    fact_check_true:'Correct! The 50 stars represent the 50 U.S. states.',
-    fact_check_false:'Not quite. The American flag really does have 50 stars—one for each state.' },
-  { id:'practice_4', text:'New York City is the capital of the United States.', is_true:false,
-    fact_check_true:'Actually, Washington, D.C. is the capital of the United States.',
-    fact_check_false:'Correct! Washington, D.C.—not New York City—is the U.S. capital.' }
+  {
+    id: 'practice_1',
+    text: 'The Sun revolves around the Earth each day.',
+    is_true: false,
+    fact_check_true: 'Actually, the Earth orbits the Sun; the Sun does not revolve around the Earth.',
+    fact_check_false: 'Correct! The Earth orbits the Sun; the Sun does not revolve around the Earth.'
+  },
+  {
+    id: 'practice_2',
+    text: 'Humans need oxygen to survive.',
+    is_true: true,
+    fact_check_true: 'Correct! Humans must breathe oxygen to stay alive.',
+    fact_check_false: 'Not quite. Humans do need oxygen to survive.'
+  },
+  {
+    id: 'practice_3',
+    text: 'The American flag has 50 stars, one for each U.S. state.',
+    is_true: true,
+    fact_check_true: 'Correct! The 50 stars represent the 50 U.S. states.',
+    fact_check_false: 'Not quite. The American flag really does have 50 stars—one for each state.'
+  },
+  {
+    id: 'practice_4',
+    text: 'New York City is the capital of the United States.',
+    is_true: false,
+    fact_check_true: 'Actually, Washington, D.C. is the capital of the United States.',
+    fact_check_false: 'Correct! Washington, D.C.—not New York City—is the U.S. capital.'
+  }
 ];
 
-// ------------------------ STATE ------------------------
+// ------------------------ STATE OBJECT ------------------------
 const state = {
   participant : '',
   sessionKey  : '',
@@ -215,36 +223,28 @@ const state = {
 
 const stage = document.getElementById('stage');
 let rtClock = 0;
-let INELIGIBLE_SET = new Set(); // NEW: ineligible PIDs loaded from CSV
 
-// ------------------------ UTILS ------------------------
+// ------------------------ UTILITY FUNCTIONS ------------------------
 const sleep = ms => new Promise(r=>setTimeout(r,ms));
 const shuffle = arr=>{ for(let i=arr.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [arr[i],arr[j]]=[arr[j],arr[i]];} return arr; };
 const show = html => stage.innerHTML = html;
 const choice = arr => arr[Math.floor(Math.random() * arr.length)];
-const normalizePID = pid => (pid||'').trim().toLowerCase();
 
-function getQueryPID() {
-  const params = new URLSearchParams(window.location.search);
-  // Common fallbacks used by panels
-  return params.get(CONFIG.prolificPIDParam) || params.get('participant_id') || params.get('PROLIFIC_PID');
-}
-
-// ------------------------ EXIT TO PROLIFIC ------------------------
-function exitToProlific(messageHTML) {
+// Exit to Prolific (no-consent/ineligible)
+function exitToProlific() {
   show(`
     <div class="questionnaire-container" style="text-align:center;">
-      <h2>Thank you for your time</h2>
-      ${messageHTML || '<p>You are ineligible for this study based on screening criteria.</p>'}
+      <h2>Thank you for your interest.</h2>
+      <p>As you do not meet the eligibility criteria or do not wish to consent, you cannot proceed with the study.</p>
       <p>You will now be returned to Prolific.</p>
     </div>
   `);
   setTimeout(() => {
-    window.location.href = CONFIG.prolificScreenoutURL;
-  }, 3000);
+    window.location.href = 'https://app.prolific.com/submissions/complete?cc=COSVL3Y3';
+  }, 5000);
 }
 
-// ------------------------ DATA LOGGING ------------------------
+// ------------------------ DATA LOGGING FUNCTIONS ------------------------
 function log(dataRow) {
   dataRow.timestamp = new Date().toISOString();
   const completeRow = {};
@@ -326,6 +326,8 @@ async function loadCSVStimuli(){
   state.inductionStatements = state.stimuliPool.slice(0, CONFIG.numInductionTrials);
   state.testStatements = state.stimuliPool.slice(CONFIG.numInductionTrials, CONFIG.numInductionTrials + CONFIG.numTestTrials);
 }
+
+// Simplified preload function - no images to preload
 async function preloadImages(list){ return Promise.resolve(); }
 
 // ------------------- KEYBOARD HELPERS -------------------
@@ -361,17 +363,20 @@ function waitKeysOrTimeout(validKeys, timeoutMs) {
 }
 
 // ------------------- FEEDBACK LOGIC -------------------
-// SYMMETRIC NON-VERIDICAL SCHEDULE for INDUCTION:
-// - p_c = CONFIG.feedbackManipulationPercentages[group] (Affirm if correct)
-// - If correct: Affirm with p_c
-// - If incorrect: Affirm with (1 - p_c)
-// - Affirm shows a fact-check matching the participant's key (may be counterfactual)
-// - Refute shows the opposite
-// - content_alignment = 'veridical' iff shown fact-check aligns with ground truth
+/*
+  Symmetric non-veridical schedule (INDUCTION ONLY):
+  - Let p_c = feedbackManipulationPercentages[group].
+  - If response is correct: Affirm with p_c.
+  - If response is incorrect: Affirm with (1 - p_c).
+  - Affirm => show fact-check that MATCHES participant's key (can be counterfactual).
+  - Refute => show the OPPOSITE fact-check.
+  - content_alignment = 'veridical' iff shown fact-check matches ground truth (stimulus.is_true).
+  This yields a counterfactual dose of (1 - p_c) independent of accuracy and base rates.
+*/
 function chooseFeedback_nonVeridicalSymmetric(stimulus, participantResponse, group, answeredCorrectly){
   const p_c = CONFIG.feedbackManipulationPercentages[group]; // null for Control
   if (p_c == null) {
-    // Control: veridical baseline
+    // Control group: veridical content
     const showTrue = stimulus.is_true;
     return {
       feedbackManipulationType: 'Veridical',
@@ -382,7 +387,7 @@ function chooseFeedback_nonVeridicalSymmetric(stimulus, participantResponse, gro
   const p_i = 1 - p_c;
   const affirm = Math.random() < (answeredCorrectly ? p_c : p_i);
 
-  // Affirm → fact-check SUPPORTS participant's key choice (True/False)
+  // Affirm → show fact-check that matches the participant's key (True/False)
   const showTrueFactCheck = affirm
     ? (participantResponse === 'True')
     : !(participantResponse === 'True');
@@ -396,12 +401,13 @@ function chooseFeedback_nonVeridicalSymmetric(stimulus, participantResponse, gro
   };
 }
 
-// ------------------- INFO & CONSENT -------------------
+// ------------------- INFORMATION & CONSENT -------------------
 async function showInformationAndConsent() {
   try {
     const response = await fetch('participant_information.txt');
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
     const infoHtml = await response.text();
+    
     show(`
       <div class="info-container">
         ${infoHtml}
@@ -411,11 +417,13 @@ async function showInformationAndConsent() {
         </div>
       </div>
     `);
+
   } catch (e) {
     console.error('Failed to load participant information file:', e);
     show(`<p style="color:red;font-weight:bold;">Error: Could not load the participant information sheet.</p><p>Please contact the researcher.</p>`);
     return false;
   }
+
   await new Promise(resolve => { document.getElementById('next_btn').onclick = resolve; });
 
   show(`
@@ -428,7 +436,11 @@ async function showInformationAndConsent() {
     document.getElementById('yes_btn').onclick = () => resolve(true);
     document.getElementById('no_btn').onclick = () => resolve(false);
   });
-  if (!isOver18) { exitToProlific('<p>You must be 18 or older to participate.</p>'); return false; }
+
+  if (!isOver18) {
+    exitToProlific();
+    return new Promise(() => {}); // halt
+  }
 
   show(`
     <div class="questionnaire-container">
@@ -440,119 +452,30 @@ async function showInformationAndConsent() {
     document.getElementById('yes_btn').onclick = () => resolve(true);
     document.getElementById('no_btn').onclick = () => resolve(false);
   });
-  if (!hasConsented) { exitToProlific('<p>You did not consent to participate.</p>'); return false; }
+
+  if (!hasConsented) {
+    exitToProlific();
+    return new Promise(() => {}); // halt
+  }
 
   return true;
 }
 
-// ------------------- NEW: INELIGIBLE CSV LOADING -------------------
-function parseIDsFromCSV(text) {
-  const ids = new Set();
-  if (!text || !text.trim()) return ids;
-
-  const lines = text.replace(/\r/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
-  if (!lines.length) return ids;
-
-  // detect delimiter on header
-  const headerLine = lines[0];
-  const delim = headerLine.includes('\t') ? '\t' :
-                headerLine.includes(',')  ? ','  :
-                headerLine.includes(';')  ? ';'  : null;
-
-  if (!delim) {
-    // one ID per line
-    lines.forEach(l => ids.add(normalizePID(l.replace(/^"|"$/g,''))));
-    return ids;
-  }
-
-  const header = headerLine.split(delim).map(h => h.trim().toLowerCase());
-  const pidColIndex =
-    header.findIndex(h => /(prolific.*id|prolific_id|pid|participant.*id|participant)/i.test(h));
-
-  // if we found a header with prolific/pid, use that column; else use first column
-  const idx = pidColIndex >= 0 ? pidColIndex : 0;
-
-  for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].split(delim);
-    if (cols[idx] != null && cols[idx].trim() !== '') {
-      ids.add(normalizePID(cols[idx].replace(/^"|"$/g,'')));
-    }
-  }
-  return ids;
-}
-
-async function loadIneligiblePIDSet() {
-  try {
-    const resp = await fetch(CONFIG.ineligibleCSV, { cache: 'no-store' });
-    if (!resp.ok) throw new Error(`Failed to load ${CONFIG.ineligibleCSV}: ${resp.status} ${resp.statusText}`);
-    const text = await resp.text();
-    INELIGIBLE_SET = parseIDsFromCSV(text);
-  } catch (e) {
-    console.warn('Could not load ineligible CSV; proceeding without screening list.', e);
-    INELIGIBLE_SET = new Set();
-  }
-}
-
-function checkIneligibleAndMaybeRedirect(pid) {
-  const norm = normalizePID(pid);
-  if (INELIGIBLE_SET.has(norm)) {
-    exitToProlific('<p>Our records show you have completed a similar study previously, so you are not eligible for this one.</p>');
-    return true;
-  }
-  return false;
-}
-
-// ------------------- NEW: PROLIFIC ID GATE -------------------
-async function showPIDGate() {
-  // Try auto-capture from URL first
-  const autoPID = getQueryPID();
-
-  // Ensure we have the latest ineligible set before checking
-  if (!INELIGIBLE_SET || INELIGIBLE_SET.size === 0) {
-    await loadIneligiblePIDSet();
-  }
-
-  if (autoPID && autoPID.trim() !== '') {
-    // Auto-screen
-    state.participant = autoPID.trim();
-    if (checkIneligibleAndMaybeRedirect(state.participant)) return;
-    // Proceed to consent
-    await afterPIDPassesGate();
-    return;
-  }
-
-  // Manual entry UI
+// ------------------- INTRO SCREEN -------------------
+async function introScreen(){
   show(`
     <h1>${CONFIG.experimentName}</h1>
     <p>Please enter your Prolific ID to begin.</p>
     <input id="pid" placeholder="Prolific ID" autocomplete="off" /><br>
     <button id="startBtn">Start</button>
   `);
-
-  document.getElementById('startBtn').onclick = async () => {
-    const pid = document.getElementById('pid').value.trim();
+  document.getElementById('startBtn').onclick = () => {
+    const pid  = document.getElementById('pid').value.trim();
     if (!pid) { alert('Please enter a Prolific ID.'); return; }
-    // Screen and proceed
-    if (checkIneligibleAndMaybeRedirect(pid)) return;
     state.participant = pid;
-    await afterPIDPassesGate();
+    state.group       = choice(CONFIG.groups); // Randomly assign group
+    runDemographics();
   };
-}
-
-async function afterPIDPassesGate() {
-  // Consent first (ethics), then load assets, then randomize group and continue
-  const consentGiven = await showInformationAndConsent();
-  if (!consentGiven) return;
-
-  show('<h2>Loading experiment assets…</h2><p>This should only take a few seconds.</p>');
-  await loadCSVStimuli();
-  await preloadImages(state.stimuliPool);
-
-  // Randomly assign group AFTER consent
-  state.group = choice(CONFIG.groups);
-
-  // Proceed to the rest of the flow (demographics -> instructions -> practice -> blocks ...)
-  runDemographics();
 }
 
 // ------------------- CORE TRIAL LOGIC -------------------
@@ -565,7 +488,7 @@ async function runSingleTrial(stimulus, blockType, trialNumInBlock) {
   if (state.keyMapping === 'q_true_p_false') {
     leftInstruction = 'Q = TRUE';
     rightInstruction = 'FALSE = P';
-  } else {
+  } else { // p_true_q_false
     leftInstruction = 'Q = FALSE';
     rightInstruction = 'TRUE = P';
   }
@@ -579,8 +502,10 @@ async function runSingleTrial(stimulus, blockType, trialNumInBlock) {
       </div>
     </div>
   `);
-
+  
+  // Start RT clock
   rtClock = performance.now();
+
   const responseResult = await waitKeysOrTimeout(['q', 'p'], CONFIG.statementTimeoutDuration);
   const rt = performance.now() - rtClock;
   let participantResponse = null;
@@ -601,9 +526,10 @@ async function runSingleTrial(stimulus, blockType, trialNumInBlock) {
   } else {
     if (state.keyMapping === 'q_true_p_false') {
       participantResponse = (keyPressed === 'q') ? 'True' : 'False';
-    } else {
+    } else { // p_true_q_false
       participantResponse = (keyPressed === 'p') ? 'True' : 'False';
     }
+    
     isCorrect = (participantResponse === 'True') === stimulus.is_true;
 
     if (blockType === 'ConfidenceInduction') {
@@ -613,19 +539,15 @@ async function runSingleTrial(stimulus, blockType, trialNumInBlock) {
       feedbackShownFactCheckFor = fb.feedbackShownFactCheckFor;
       contentAlignment          = fb.content_alignment;
     } else {
-      // Test block: veridical (feedback not displayed for TruthTest, but we log it as veridical)
+      // Test block: veridical
       feedbackManipulationType  = 'Veridical';
       feedbackShownFactCheckFor = stimulus.is_true;
       contentAlignment          = 'veridical';
     }
 
     feedbackText = feedbackShownFactCheckFor ? stimulus.fact_check_true : stimulus.fact_check_false;
-
-    // Your original file suppresses visual feedback during TruthTest; we keep that behavior.
-    if (blockType !== 'TruthTest') {
-      show(`<div class="feedback-container"><p class="feedback-text">${feedbackText}</p></div>`);
-      await sleep(CONFIG.feedbackDuration);
-    }
+    show(`<div class="feedback-container"><p class="feedback-text">${feedbackText}</p></div>`);
+    await sleep(CONFIG.feedbackDuration);
   }
 
   const trialData = {
@@ -652,7 +574,7 @@ async function runSingleTrial(stimulus, blockType, trialNumInBlock) {
   await sleep(CONFIG.isiDuration);
 }
 
-// ------------------- DEMOGRAPHICS (unchanged) -------------------
+// ------------------- DEMOGRAPHICS -------------------
 async function runDemographics() {
   show(`
     <div class="questionnaire-container">
@@ -691,15 +613,24 @@ async function runDemographics() {
   const genderSelect = document.getElementById('q_input');
   const otherTextBox = document.getElementById('q_other_text');
   genderSelect.onchange = () => {
-    if (genderSelect.value === 'other') otherTextBox.style.display = 'block';
-    else otherTextBox.style.display = 'none';
+    if (genderSelect.value === 'other') {
+      otherTextBox.style.display = 'block';
+    } else {
+      otherTextBox.style.display = 'none';
+    }
   };
   await new Promise(resolve => {
     document.getElementById('q_next').onclick = () => {
       let val = genderSelect.value;
-      if (val === 'other') val = `Other: ${otherTextBox.value.trim()}`;
-      if (val && val !== '') { state.gender = val; resolve(); }
-      else { alert('Please select an option.'); }
+      if (val === 'other') {
+        val = `Other: ${otherTextBox.value.trim()}`;
+      }
+      if (val && val !== '') {
+        state.gender = val;
+        resolve();
+      } else {
+        alert('Please select an option.');
+      }
     };
   });
 
@@ -720,15 +651,19 @@ async function runDemographics() {
   await new Promise(resolve => {
     document.getElementById('q_next').onclick = () => {
       const val = document.getElementById('q_input').value;
-      if (val && val !== '') { state.education = val; resolve(); }
-      else { alert('Please select an option.'); }
+      if (val && val !== '') {
+        state.education = val;
+        resolve();
+      } else {
+        alert('Please select an option.');
+      }
     };
   });
 
   showKeyMappingInstructions();
 }
 
-// ------------------- PRACTICE BLOCK (unchanged) -------------------
+// ------------------- PRACTICE BLOCK -------------------
 async function runPracticeBlock() {
   show(`
     <div class="info-container" style="text-align:center;">
@@ -742,13 +677,14 @@ async function runPracticeBlock() {
       <p>Press SPACE to begin the practice round.</p>
     </div>
   `);
+  
   await waitKeys([' ']);
-
+  
   for (let i = 0; i < practiceStatements.length; i++) {
     const stimulus = practiceStatements[i];
     show(`<div class="fixation-cross-container">+</div>`);
     await sleep(CONFIG.fixationCrossDuration);
-
+    
     let leftInstruction, rightInstruction;
     if (state.keyMapping === 'q_true_p_false') {
       leftInstruction = 'Q = TRUE';
@@ -757,7 +693,7 @@ async function runPracticeBlock() {
       leftInstruction = 'Q = FALSE';
       rightInstruction = 'TRUE = P';
     }
-
+    
     show(`
       <div class="statement-container">
         <div class="stimulus-text">${stimulus.text}</div>
@@ -767,15 +703,14 @@ async function runPracticeBlock() {
         </div>
       </div>
     `);
-
+    
     rtClock = performance.now();
     const responseResult = await waitKeysOrTimeout(['q', 'p'], CONFIG.statementTimeoutDuration);
     const rt = performance.now() - rtClock;
     let participantResponse = null;
     let keyPressed = responseResult.key;
-
+    
     if (responseResult.timedOut) {
-      participantResponse = 'TIMEOUT';
       show(`
         <div class="feedback-container">
           <p class="feedback-text">Time's up! Please try to respond faster.</p>
@@ -785,13 +720,15 @@ async function runPracticeBlock() {
       `);
       await waitKeys([' ']);
     } else {
-      if (state.keyMapping === 'q_true_p_false') {
-        participantResponse = (keyPressed === 'q') ? 'True' : 'False';
-      } else {
-        participantResponse = (keyPressed === 'p') ? 'True' : 'False';
-      }
-      const feedbackText = (participantResponse === 'True') ? 
-        stimulus.fact_check_true : stimulus.fact_check_false;
+      participantResponse = (state.keyMapping === 'q_true_p_false')
+        ? ((keyPressed === 'q') ? 'True' : 'False')
+        : ((keyPressed === 'p') ? 'True' : 'False');
+
+      // Practice feedback is keyed to the participant's response (as you had it)
+      const feedbackText = (participantResponse === 'True')
+        ? stimulus.fact_check_true
+        : stimulus.fact_check_false;
+      
       show(`
         <div class="feedback-container">
           <p class="feedback-text">${feedbackText}</p>
@@ -800,10 +737,11 @@ async function runPracticeBlock() {
       `);
       await waitKeys([' ']);
     }
+    
     show('');
     await sleep(CONFIG.isiDuration);
   }
-
+  
   show(`
     <div class="info-container" style="text-align:center;">
       <h2>Practice Complete!</h2>
@@ -816,13 +754,15 @@ async function runPracticeBlock() {
       <p>Press SPACE to continue to the main task.</p>
     </div>
   `);
+  
   await waitKeys([' ']);
   runBlock1();
 }
 
-// ------------------- KEY MAPPING INSTRUCTIONS (unchanged) -------------------
+// ------------------- KEY MAPPING INSTRUCTIONS -------------------
 async function showKeyMappingInstructions() {
   state.keyMapping = (Math.random() < 0.5) ? 'q_true_p_false' : 'p_true_q_false';
+  
   let keyInstructions = '';
   if (state.keyMapping === 'q_true_p_false') {
     keyInstructions = `Press the <b>Q</b> key for <b>TRUE</b>.<br>Press the <b>P</b> key for <b>FALSE</b>.`;
@@ -835,20 +775,21 @@ async function showKeyMappingInstructions() {
       <h2>Instructions</h2>
       <p>Welcome to this session. Please turn off your phone.</p>
       <p>Please read the following instructions carefully. They contain everything you need to know before we begin.</p>            
-      <p>Throughout the task you will use your keyboard to respond. On each trial you will see <strong>one news claim</strong>. Some claims are accurate and others are not.</b></p>
-      <p>Your task:</strong> press the key that corresponds to whether you believe the claim is <em>True</em> or <em>False</em>. Answer as <strong>quickly</strong> and as <strong>accurately</strong> as possible. Once an entry has been made, it is no longer possible to re-enter.</p>
+      <p>Throughout the task you will use your keyboard to respond. On each trial you will see <strong>one news claim</strong>. Some claims are accurate and others are not.</p>
+      <p><strong>Your task:</strong> press the key that corresponds to whether you believe the claim is <em>True</em> or <em>False</em>. Answer as <strong>quickly</strong> and as <strong>accurately</strong> as possible. Once an entry has been made, it is no longer possible to re-enter.</p>
       <hr style="margin: 2em 0;">
       <p style="font-size: 1.2em; text-align: center;">${keyInstructions}</p>
       <p>Place your fingers on the keys now. We will do a practice round first.</p>
       <p class="instructions" style="text-align: center; margin-top: 2em;">Press SPACE to proceed to the practice round.</p>
     </div>
   `;
+
   show(generalInstructions);
   await waitKeys([' ']);
   runPracticeBlock();
 }
 
-// ------------------- BLOCKS & QUESTIONNAIRES (unchanged) -------------------
+// ------------------- BLOCKS & QUESTIONNAIRES -------------------
 async function runBlock1(){
   show(`<h2>Block 1</h2><p>Press SPACE to begin.</p>`);
   await waitKeys([' ']);
@@ -860,9 +801,21 @@ async function runBlock1(){
 
 async function runQuestionnaire(timing){
   const questions = [
-    { id:'q_own_ability', text:"<br>How confident are you in your own ability to recognise news that is made up?<br>(1 = Not at all confident, 5 = Moderately confident, 9 = Extremely confident)", type:'number_1-9' },
-    { id:'q_others_ability', text:"<br>How confident are you in others' ability to recognise news that is made up?<br>(1 = Not at all confident, 5 = Moderately confident, 9 = Extremely confident)", type:'number_1-9' },
-    { id:'q_rank', text:"<br>On a scale from 0 % (no one) to 100 % (everyone), what percentage of people do you think you are better than at detecting news that is made up?<br>", type:'number_1-100' }
+    {
+      id: 'q_own_ability',
+      text: "<br>How confident are you in your own ability to recognise news that is made up?<br>(1 = Not at all confident, 5 = Moderately confident, 9 = Extremely confident)",
+      type: 'number_1-9'
+    },
+    {
+      id: 'q_others_ability',
+      text: "<br>How confident are you in others' ability to recognise news that is made up?<br>(1 = Not at all confident, 5 = Moderately confident, 9 = Extremely confident)",
+      type: 'number_1-9'
+    },
+    {
+      id: 'q_rank',
+      text: "<br>On a scale from 0 % (no one) to 100 % (everyone), what percentage of people do you think you are better than at detecting news that is made up?<br>",
+      type: 'number_1-100'
+    }
   ];
   for (const q of questions) {
     show(`
@@ -888,6 +841,7 @@ async function runQuestionnaire(timing){
     }
     state[q.id + '_' + timing] = response;
   }
+  
   if (timing === 'pre') runBlock2(); else runDebrief();
 }
 
@@ -900,48 +854,7 @@ async function runBlock2(){
   runQuestionnaire('post');
 }
 
-// ------------------- DEBRIEF & FINISH (unchanged) -------------------
-function downloadFactChecks() {
-  const a = document.createElement('a');
-  a.href = 'fact-checks.pdf';
-  a.download = 'fact-checks.pdf';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-}
-
-async function showDebriefing() {
-  const group = state.group;
-  let debriefFile = (group === 'Control') ? 'debrief_control.txt' : 'debrief_experimental.txt';
-  try {
-    const response = await fetch(debriefFile);
-    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-    const debriefHtml = await response.text();
-    show(`
-      <div class="debrief-container">
-        ${debriefHtml}
-        <div class="button-container">
-          <button id="download_btn">Download All Fact-Checks</button>
-          <button id="finish_btn">Finish Experiment</button>
-        </div>
-      </div>
-    `);
-    document.getElementById('download_btn').onclick = downloadFactChecks;
-    document.getElementById('finish_btn').onclick = finishExperiment;
-  } catch (e) {
-    console.error('Failed to load debriefing file:', e);
-    show(`
-      <div class="questionnaire-container">
-        <p style="color:red;font-weight:bold;">Error: Could not load the debriefing information.</p>
-        <p>Please contact the researcher.</p>
-        <p>You can still complete the experiment to receive payment.</p>
-        <button id="finish_btn">Finish Experiment</button>
-      </div>
-    `);
-    document.getElementById('finish_btn').onclick = finishExperiment;
-  }
-}
-
+// ------------------- DEBRIEF QUESTIONS -------------------
 async function runDebrief() {
   show(`
     <div class="questionnaire-container">
@@ -970,7 +883,58 @@ async function runDebrief() {
   showDebriefing();
 }
 
+// ------------------- DEBRIEFING PAGE -------------------
+function downloadFactChecks() {
+  const a = document.createElement('a');
+  a.href = 'fact-checks.pdf';
+  a.download = 'fact-checks.pdf';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+async function showDebriefing() {
+  const group = state.group;
+  let debriefFile = '';
+  if (group === 'Control') {
+    debriefFile = 'debrief_control.txt';
+  } else {
+    debriefFile = 'debrief_experimental.txt';
+  }
+
+  try {
+    const response = await fetch(debriefFile);
+    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+    const debriefHtml = await response.text();
+
+    show(`
+      <div class="debrief-container">
+        ${debriefHtml}
+        <div class="button-container">
+          <button id="download_btn">Download All Fact-Checks</button>
+          <button id="finish_btn">Finish Experiment</button>
+        </div>
+      </div>
+    `);
+    document.getElementById('download_btn').onclick = downloadFactChecks;
+    document.getElementById('finish_btn').onclick = finishExperiment;
+
+  } catch (e) {
+    console.error('Failed to load debriefing file:', e);
+    show(`
+      <div class="questionnaire-container">
+        <p style="color:red;font-weight:bold;">Error: Could not load the debriefing information.</p>
+        <p>Please contact the researcher.</p>
+        <p>You can still complete the experiment to receive payment.</p>
+        <button id="finish_btn">Finish Experiment</button>
+      </div>
+    `);
+    document.getElementById('finish_btn').onclick = finishExperiment;
+  }
+}
+
 function finishExperiment(){
+  // Add all non-trial data to every row for easier analysis
   state.data.forEach(row => {
     row.q_own_ability_pre = state.q_own_ability_pre;
     row.q_others_ability_pre = state.q_others_ability_pre;
@@ -983,13 +947,15 @@ function finishExperiment(){
     row.education = state.education;
     row.responded_randomly = state.responded_randomly;
     row.searched_internet = state.searched_internet;
-    if (!row.key_mapping) row.key_mapping = state.keyMapping;
+    if (!row.key_mapping) {
+      row.key_mapping = state.keyMapping;
+    }
   });
 
   const csv = toCSV(state.data);
   const fn  = `${CONFIG.experimentName}_${state.participant}_${state.group}_${Date.now()}.csv`;
   show('<h2>Uploading your data…</h2><p>Please wait. This should not take long.</p>');
-
+  
   uploadCSV(fn,csv)
     .then(r=>{ if(!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}`); return r.json(); })
     .then(async () => { 
@@ -1008,12 +974,17 @@ function finishExperiment(){
     });
 }
 
-// ------------------- LAUNCH (CHANGED) -------------------
+// ------------------- LAUNCH -------------------
 (async()=>{
   try{
-    // 1) Prolific ID gate (auto-captures from URL or prompts)
-    await showPIDGate();
-    // Flow continues inside afterPIDPassesGate()
+    const consentGiven = await showInformationAndConsent();
+    if (!consentGiven) {
+      return; // halted by consent flow
+    }
+    show('<h2>Loading experiment assets…</h2><p>This should only take a few seconds.</p>');
+    await loadCSVStimuli();
+    await preloadImages(state.stimuliPool);
+    introScreen();
   }catch(e){
     console.error(e);
     show(`<p style="color:red;font-weight:bold;">Error: ${e.message}</p><p>Please check the browser console (Ctrl+Shift+J or Cmd+Opt+J) for more details and contact the researcher.</p>`);
